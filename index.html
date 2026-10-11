@@ -229,6 +229,15 @@
     position: fixed; inset: 0; background: rgba(0,0,0,0.45);
     display: flex; align-items: center; justify-content: center; z-index: 40; padding: 20px;
   }
+  .receipt-box { width: 100%; max-width: 480px; max-height: 100%; display: flex; flex-direction: column; gap: 10px; }
+  .receipt-head { display: flex; justify-content: flex-end; gap: 8px; }
+  .receipt-msg { color: #fff; text-align: center; margin: 0; }
+  .receipt-box img { max-width: 100%; max-height: 80vh; object-fit: contain; border-radius: 8px; background: #fff; align-self: center; }
+  .photo-row { display: flex; gap: 8px; }
+  .photo-row .btn { flex: 1; }
+  .photo-preview { position: relative; margin-top: 10px; display: inline-block; }
+  .photo-preview img { max-width: 160px; max-height: 200px; border-radius: 8px; border: 1px solid var(--border); display: block; }
+  .photo-preview button { position: absolute; top: -10px; right: -10px; width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--minus); color: #fff; font-size: 16px; cursor: pointer; }
   .modal { background: var(--surface); border-radius: 14px; padding: 20px; width: 100%; max-width: 380px; }
   .modal p { margin: 0 0 16px; font-size: 16px; line-height: 1.6; white-space: pre-wrap; }
   .modal-actions { display: flex; gap: 10px; }
@@ -255,6 +264,17 @@
 </nav>
 
 <div id="toast" class="toast hidden"></div>
+
+<div id="receiptOverlay" class="overlay hidden">
+  <div class="receipt-box">
+    <div class="receipt-head">
+      <a id="receiptLink" class="btn" target="_blank" rel="noopener" style="text-decoration:none">ドライブで開く</a>
+      <button class="btn" id="receiptClose">閉じる</button>
+    </div>
+    <p id="receiptMsg" class="receipt-msg"></p>
+    <img id="receiptImg" alt="レシート">
+  </div>
+</div>
 
 <div id="confirmOverlay" class="overlay hidden">
   <div class="modal">
@@ -351,12 +371,16 @@
   }
 
   function addTxn(t) {
-    data.txns.push(Object.assign({ id: newId(), memo: '', createdAt: Date.now() }, t));
+    const txn = Object.assign({ id: newId(), memo: '', createdAt: Date.now() }, t);
+    data.txns.push(txn);
     saveData();
+    return txn;
   }
 
   function deleteTxn(id) {
-    data.txns = data.txns.filter(t => t.id !== id);
+    const t = data.txns.find(x => x.id === id);
+    if (t && (t.receiptId || t.receiptPending)) removeReceipt(t);
+    data.txns = data.txns.filter(x => x.id !== id);
     saveData();
   }
 
@@ -430,7 +454,10 @@
 
   const mainEl = $('main');
 
+  // 画面を描き直しても、入力途中の金額・日付・メモが消えないように控えておく
+  const drafts = {};
   function render() {
+    mainEl.querySelectorAll('input[data-keep]').forEach(i => { drafts[i.id] = i.value; });
     document.querySelectorAll('#tabbar button').forEach(b => b.classList.toggle('on', !ui.settingsOpen && b.dataset.tab === tab));
     if (ui.settingsOpen) { renderSettings(); return; }
     ({ expense: renderExpense, deposit: renderDeposit, withdraw: renderWithdraw, pl: renderPL, bs: renderBS, payee: renderPayee })[tab]();
@@ -456,15 +483,15 @@
     return `
       <div class="field">
         <label class="label">金額</label>
-        <div class="amount-wrap"><input class="input amount-input" id="${prefix}Amount" inputmode="numeric" placeholder="0" autocomplete="off"></div>
+        <div class="amount-wrap"><input class="input amount-input" id="${prefix}Amount" data-keep inputmode="numeric" placeholder="0" autocomplete="off" value="${esc(drafts[prefix + 'Amount'] || '')}"></div>
       </div>
       <div class="field">
         <label class="label">日付</label>
-        <input class="input" type="date" id="${prefix}Date" value="${today()}">
+        <input class="input" type="date" id="${prefix}Date" data-keep value="${esc(drafts[prefix + 'Date'] || today())}">
       </div>
       <div class="field">
         <label class="label">メモ(任意)</label>
-        <input class="input" id="${prefix}Memo" placeholder="例: スーパー○○" maxlength="100">
+        <input class="input" id="${prefix}Memo" data-keep placeholder="例: スーパー○○" maxlength="100" value="${esc(drafts[prefix + 'Memo'] || '')}">
       </div>`;
   }
 
@@ -474,6 +501,8 @@
     const memo = $(prefix + 'Memo').value.trim();
     if (!amount || amount <= 0) { toast('金額を入力してください'); $(prefix + 'Amount').focus(); return null; }
     if (!date) { toast('日付を入力してください'); return null; }
+    // 登録したら金額とメモは空に戻す(日付は続けて入力しやすいようそのまま)
+    $(prefix + 'Amount').value = ''; $(prefix + 'Memo').value = '';
     return { amount, date, memo };
   }
 
@@ -517,13 +546,23 @@
       return `<div class="entry">
         <div class="entry-main"><div class="entry-title">${tag}${esc(main)}</div><div class="entry-sub">${esc(sub)}</div></div>
         <div class="entry-amount">${yen(t.amount)}</div>
+        ${receiptBtn(t)}
         <button class="entry-del" data-del="${esc(t.id)}" aria-label="削除">🗑</button>
       </div>`;
     }).join('');
     return `<div class="section-head">${esc(title)}</div><div class="card">${rows || '<div class="empty">まだ記録がありません</div>'}</div>`;
   }
 
+  const receiptBtn = (t) => t.receiptId || t.receiptPending ? `<button class="entry-del" data-receipt="${esc(t.id)}" aria-label="レシートを見る">🧾</button>` : '';
+  function bindReceipts() {
+    mainEl.querySelectorAll('[data-receipt]').forEach(b => b.onclick = () => {
+      const t = data.txns.find(x => x.id === b.dataset.receipt);
+      if (t) showReceipt(t);
+    });
+  }
+
   function bindDelete() {
+    bindReceipts();
     mainEl.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
       const t = data.txns.find(x => x.id === b.dataset.del);
       if (!t) return;
@@ -605,6 +644,16 @@
           ${s.adding === 'person' ? addRowHtml('名前 (例: 妻)') : ''}
         </div>
         ${commonFieldsHtml('ex')}
+        <div class="field">
+          <label class="label">レシート写真 <span class="optional">(任意)</span></label>
+          <div class="photo-row">
+            <button class="btn" id="exCamBtn">📷 撮影する</button>
+            <button class="btn" id="exPickBtn">🖼 写真を選ぶ</button>
+          </div>
+          <input type="file" accept="image/*" capture="environment" id="exCam" hidden>
+          <input type="file" accept="image/*" id="exPick" hidden>
+          ${s.photoUrl ? `<div class="photo-preview"><img src="${s.photoUrl}" alt="レシート"><button id="exPhotoDel" aria-label="写真を外す">✕</button></div>` : ''}
+        </div>
         <button class="btn-primary" id="exSave">登録する</button>
       </div>
       ${recentHtml(['exp_cash', 'exp_card', 'exp_emoney', 'charge'], '最近の出費')}`;
@@ -647,6 +696,23 @@
       render();
     };
 
+    const clearPhoto = () => { if (s.photoUrl) URL.revokeObjectURL(s.photoUrl); s.photo = null; s.photoUrl = ''; };
+    const onPhoto = async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        const blob = await shrinkImage(file);
+        clearPhoto();
+        s.photo = blob; s.photoUrl = URL.createObjectURL(blob);
+        render();
+      } catch (err) { toast(err.message); }
+    };
+    $('exCamBtn').onclick = () => $('exCam').click();
+    $('exPickBtn').onclick = () => $('exPick').click();
+    $('exCam').onchange = onPhoto;
+    $('exPick').onchange = onPhoto;
+    if ($('exPhotoDel')) $('exPhotoDel').onclick = () => { clearPhoto(); render(); };
+
     $('exSave').onclick = () => {
       if (!s.account) { toast('勘定科目を選んでください'); return; }
       const c = readCommon('ex'); if (!c) return;
@@ -661,8 +727,13 @@
         if (!s.emoney) { toast('電子マネーの種類を選んでください'); return; }
         credit = s.emoney;
       }
-      addTxn({ kind: METHOD_KIND[s.method], date: c.date, debit: s.account, credit, amount: c.amount, memo: c.memo, payee: s.payee || '', person: s.person || '' });
-      toast(`${s.account} ${yen(c.amount)} を登録しました`);
+      const photo = s.photo;
+      const t = addTxn({ kind: METHOD_KIND[s.method], date: c.date, debit: s.account, credit, amount: c.amount, memo: c.memo, payee: s.payee || '', person: s.person || '', receiptPending: photo ? true : undefined });
+      if (photo) {
+        pendingPut(t.id, photo).then(processReceiptQueue).catch(() => toast('写真を保存できませんでした'));
+        clearPhoto();
+      }
+      toast(`${s.account} ${yen(c.amount)} を登録しました` + (photo && !accessToken ? '(写真はサインイン後にドライブへ保存します)' : ''));
       s.payee = '';
       render();
     };
@@ -937,6 +1008,7 @@
           <div class="entry-main"><div class="entry-title">${esc(t.debit)}</div>
           <div class="entry-sub">${esc([shortDate(t.date), t.credit, t.person ? '👤' + t.person : '', t.memo].filter(Boolean).join('　'))}</div></div>
           <div class="entry-amount">${yen(t.amount)}</div>
+          ${receiptBtn(t)}
         </div>`).join('')}</div>`;
     }
 
@@ -954,6 +1026,7 @@
       <p class="note">※ 表は横にスクロールできます。支払先を押すと、下に明細が出ます。</p>
       ${detail}` : '<div class="card empty">この年の出費はまだありません</div>'}`;
 
+    bindReceipts();
     $('pyPrev').onclick = () => { s.year--; s.selected = ''; render(); };
     $('pyNext').onclick = () => { s.year++; s.selected = ''; render(); };
     mainEl.querySelectorAll('[data-payee-row]').forEach(r => r.onclick = () => {
@@ -1119,7 +1192,7 @@
   const FOLDER_KEY = 'kakeiboFolder_v1';
   const SH_TX = '取引', SH_ACC = '勘定科目', SH_META = '設定', SH_LIST = 'リスト';
   const SHEET_TABS = [SH_TX, SH_ACC, SH_META, SH_LIST];
-  const TX_HEADER = ['ID', '日付', '区分', '借方科目', '貸方科目', '金額', '摘要', '登録日時', '支払先', '使った人'];
+  const TX_HEADER = ['ID', '日付', '区分', '借方科目', '貸方科目', '金額', '摘要', '登録日時', '支払先', '使った人', 'レシート'];
   const ACC_HEADER = ['科目名', '分類', '種別', '借方合計', '貸方合計', '残高'];
 
   let syncState = 'signed_out'; // 'signed_out' | 'idle' | 'syncing' | 'error'
@@ -1169,7 +1242,7 @@
   function onSignedIn(token) {
     accessToken = token;
     setSyncState('idle');
-    pullFromSheet(false);
+    pullFromSheet(false).then(processReceiptQueue);
   }
 
   function initSync() {
@@ -1260,6 +1333,162 @@
   }
 
   const DRIVE = 'https://www.googleapis.com/drive/v3';
+  // ============================================================
+  //  レシート写真(Googleドライブの「レシート」フォルダに保存)
+  // ============================================================
+  const RECEIPT_FOLDER_NAME = 'レシート';
+  const RECEIPT_FOLDER_KEY = 'kakeiboReceiptFolder_v1';
+  const receiptUrl = (id) => `https://drive.google.com/file/d/${id}/view`;
+  const receiptIdFrom = (v) => { const m = String(v || '').match(/\/d\/([A-Za-z0-9_-]+)/); return m ? m[1] : ''; };
+
+  // まだドライブに送っていない写真は、端末内(IndexedDB)に取引IDごとに置いておく
+  function receiptDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('kakeiboReceipts', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('pending');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function idb(mode, fn) {
+    const db = await receiptDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('pending', mode);
+      const req = fn(tx.objectStore('pending'));
+      tx.oncomplete = () => resolve(req.result);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  const pendingPut = (id, blob) => idb('readwrite', st => st.put(blob, id));
+  const pendingGet = (id) => idb('readonly', st => st.get(id));
+  const pendingDel = (id) => idb('readwrite', st => st.delete(id));
+  const pendingKeys = () => idb('readonly', st => st.getAllKeys());
+
+  // 撮った写真を長辺1600pxのJPEGに縮めて、容量を抑える
+  function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * k);
+        c.height = Math.round(img.naturalHeight * k);
+        const g = c.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, c.width, c.height);
+        g.drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(b => b ? resolve(b) : reject(new Error('画像を変換できません')), 'image/jpeg', 0.8);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めません')); };
+      img.src = url;
+    });
+  }
+
+  async function getReceiptFolder() {
+    let id = localStorage.getItem(RECEIPT_FOLDER_KEY);
+    if (id) {
+      try {
+        const f = await apiJson(`${DRIVE}/files/${id}?fields=id,trashed`);
+        if (!f.trashed) return id;
+      } catch (e) { if (e.status !== 404) throw e; }
+    }
+    const q = encodeURIComponent(`name='${RECEIPT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+    const r = await apiJson(`${DRIVE}/files?q=${q}&spaces=drive&fields=files(id)`);
+    if (r.files && r.files[0]) {
+      id = r.files[0].id;
+    } else {
+      // スプレッドシートと同じフォルダに作る。作れなければマイドライブ直下
+      const meta = { name: RECEIPT_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' };
+      let parent = '', made = null;
+      try {
+        await getOrCreateSheet();
+        parent = ((await apiJson(`${DRIVE}/files/${sheetId}?fields=parents`)).parents || [])[0] || '';
+      } catch (e) {}
+      if (parent) {
+        try { made = await apiJson(`${DRIVE}/files?fields=id`, { method: 'POST', json: Object.assign({ parents: [parent] }, meta) }); } catch (e) {}
+      }
+      if (!made) made = await apiJson(`${DRIVE}/files?fields=id`, { method: 'POST', json: meta });
+      id = made.id;
+    }
+    localStorage.setItem(RECEIPT_FOLDER_KEY, id);
+    return id;
+  }
+
+  async function uploadReceipt(t, blob) {
+    const folder = await getReceiptFolder();
+    const meta = { name: `レシート_${t.date}_${t.payee || t.debit}_${t.amount}円.jpg`, mimeType: 'image/jpeg', parents: [folder] };
+    const boundary = 'kakeibo_' + Date.now().toString(36);
+    const body = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: image/jpeg\r\n\r\n`,
+      blob,
+      `\r\n--${boundary}--`
+    ]);
+    const r = await apiJson('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+      method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body
+    });
+    return r.id;
+  }
+
+  // 端末に残っている写真をドライブへ送る(サインイン時・オンライン復帰時・登録時)
+  let receiptBusy = false;
+  async function processReceiptQueue() {
+    if (!accessToken || !navigator.onLine || receiptBusy) return;
+    receiptBusy = true;
+    try {
+      for (const id of await pendingKeys()) {
+        const t = data.txns.find(x => x.id === id);
+        if (!t || t.receiptId) { await pendingDel(id); continue; }
+        const fileId = await uploadReceipt(t, await pendingGet(id));
+        await pendingDel(id);
+        // 送信中にシートから読み込み直している場合もあるので、今のデータから探し直す
+        const cur = data.txns.find(x => x.id === id);
+        if (cur) { cur.receiptId = fileId; delete cur.receiptPending; saveData(); }
+      }
+    } catch (e) {
+      lastError = 'レシート写真の保存: ' + errorText(e);
+      setSyncState('error');
+    } finally {
+      receiptBusy = false;
+    }
+  }
+
+  function removeReceipt(t) {
+    pendingDel(t.id).catch(() => {});
+    if (t.receiptId && accessToken) {
+      apiJson(`${DRIVE}/files/${t.receiptId}`, { method: 'PATCH', json: { trashed: true } }).catch(() => {});
+    }
+  }
+
+  let viewerUrl = null;
+  async function showReceipt(t) {
+    const img = $('receiptImg'), msg = $('receiptMsg'), link = $('receiptLink');
+    img.removeAttribute('src');
+    msg.textContent = '読み込み中…';
+    link.classList.toggle('hidden', !t.receiptId);
+    if (t.receiptId) link.href = receiptUrl(t.receiptId);
+    $('receiptOverlay').classList.remove('hidden');
+    try {
+      let blob = await pendingGet(t.id).catch(() => null);
+      if (!blob && t.receiptId) {
+        if (!accessToken) throw new Error('Googleにサインインすると表示できます');
+        const res = await api(`${DRIVE}/files/${t.receiptId}?alt=media`);
+        if (!res.ok) throw new Error(res.status === 404 ? '写真が見つかりません(ドライブで削除された可能性があります)' : '写真を読み込めませんでした');
+        blob = await res.blob();
+      }
+      if (!blob) throw new Error('写真がありません');
+      if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+      viewerUrl = URL.createObjectURL(blob);
+      img.src = viewerUrl;
+      msg.textContent = '';
+    } catch (e) {
+      msg.textContent = e.message;
+    }
+  }
+  $('receiptClose').onclick = () => $('receiptOverlay').classList.add('hidden');
+
+
   const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
 
   function folderIdFrom(s) {
@@ -1333,7 +1562,7 @@
   }
 
   async function readSheet() {
-    const ranges = [`'${SH_TX}'!A2:J`, `'${SH_ACC}'!A2:C`, `'${SH_META}'!B1`, `'${SH_LIST}'!A2:B`].map(encodeURIComponent).join('&ranges=');
+    const ranges = [`'${SH_TX}'!A2:K`, `'${SH_ACC}'!A2:C`, `'${SH_META}'!B1`, `'${SH_LIST}'!A2:B`].map(encodeURIComponent).join('&ranges=');
     const r = await apiJson(`${SHEETS}/${sheetId}/values:batchGet?ranges=${ranges}&valueRenderOption=UNFORMATTED_VALUE`);
     const [tx, ac, meta, list] = r.valueRanges.map(v => v.values || []);
     const updatedAt = Number(meta[0] && meta[0][0]) || 0;
@@ -1348,7 +1577,8 @@
       memo: String(row[6] || ''),
       createdAt: Number(row[7]) || Date.parse(String(row[7] || '')) || 0,
       payee: String(row[8] || '').trim(),
-      person: String(row[9] || '').trim()
+      person: String(row[9] || '').trim(),
+      receiptId: receiptIdFrom(row[10])
     })).filter(t => t.amount > 0);
     const payees = [], people = [];
     const push = (arr, v) => { v = String(v || '').trim(); if (v && !arr.includes(v)) arr.push(v); };
@@ -1365,7 +1595,7 @@
     await ensureTabs();
     const txRows = [TX_HEADER].concat(
       data.txns.slice().sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt)
-        .map(t => [t.id, t.date, KINDS[t.kind] || t.kind, t.debit, t.credit, t.amount, t.memo || '', new Date(t.createdAt || 0).toLocaleString('ja-JP'), t.payee || '', t.person || ''])
+        .map(t => [t.id, t.date, KINDS[t.kind] || t.kind, t.debit, t.credit, t.amount, t.memo || '', new Date(t.createdAt || 0).toLocaleString('ja-JP'), t.payee || '', t.person || '', t.receiptId ? receiptUrl(t.receiptId) : ''])
     );
     const q = (s) => `'${s}'`;
     const accRows = [ACC_HEADER].concat(data.accounts.map((a, i) => {
@@ -1378,7 +1608,7 @@
     const listRows = [['支払先', '使った人']];
     for (let i = 0; i < Math.max(data.payees.length, data.people.length); i++) listRows.push([data.payees[i] || '', data.people[i] || '']);
     await apiJson(`${SHEETS}/${sheetId}/values:batchClear`, {
-      method: 'POST', json: { ranges: [`'${SH_TX}'!A:J`, `'${SH_ACC}'!A:F`, `'${SH_META}'!A:B`, `'${SH_LIST}'!A:B`] }
+      method: 'POST', json: { ranges: [`'${SH_TX}'!A:K`, `'${SH_ACC}'!A:F`, `'${SH_META}'!A:B`, `'${SH_LIST}'!A:B`] }
     });
     await apiJson(`${SHEETS}/${sheetId}/values:batchUpdate`, {
       method: 'POST', json: {
@@ -1493,7 +1723,7 @@
     }
   }
 
-  window.addEventListener('online', () => { if (pendingUpload) flushSheetSync(); });
+  window.addEventListener('online', () => { if (pendingUpload) flushSheetSync(); processReceiptQueue(); });
   // 他の端末で記録した内容を、アプリを開き直したときに取り込む
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && accessToken) {
