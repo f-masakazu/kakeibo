@@ -27,6 +27,7 @@
     --minus: #b5482f;
     --card: #7a4fa0;
     --emoney: #c9711f;
+    --red: #d32f2f;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -41,6 +42,7 @@
       --minus: #e0715a;
       --card: #b893d8;
       --emoney: #e0954f;
+      --red: #ff6b6b;
     }
   }
 
@@ -149,6 +151,7 @@
   .entry-main { flex: 1; min-width: 0; }
   .entry-title { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .entry-sub { font-size: 12px; color: var(--ink-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .payee-em { color: var(--red); font-weight: 800; }
   .entry-amount { font-size: 16px; font-weight: 700; white-space: nowrap; }
   .entry-del { background: none; border: none; font-size: 16px; color: var(--ink-muted); padding: 6px; cursor: pointer; }
   .empty { text-align: center; color: var(--ink-muted); font-size: 14px; padding: 14px 0; }
@@ -542,9 +545,15 @@
         main = to && to.role === 'cash' ? '現金で引き出し' : to && to.role === 'card' ? `${t.debit} 引き落とし` : t.debit;
         sub = t.credit + 'から';
       }
-      sub = [shortDate(t.date), t.payee, t.person ? '👤' + t.person : '', sub, t.memo].filter(Boolean).join('　');
+      // 支払先は目立つよう赤の太字にする
+      const subHtml = [
+        esc(shortDate(t.date)),
+        t.payee ? `<span class="payee-em">${esc(t.payee)}</span>` : '',
+        t.person ? esc('👤' + t.person) : '',
+        esc(sub), esc(t.memo)
+      ].filter(Boolean).join('　');
       return `<div class="entry">
-        <div class="entry-main"><div class="entry-title">${tag}${esc(main)}</div><div class="entry-sub">${esc(sub)}</div></div>
+        <div class="entry-main"><div class="entry-title">${tag}${esc(main)}</div><div class="entry-sub">${subHtml}</div></div>
         <div class="entry-amount">${yen(t.amount)}</div>
         ${receiptBtn(t)}
         <button class="entry-del" data-del="${esc(t.id)}" aria-label="削除">🗑</button>
