@@ -241,6 +241,19 @@
   .photo-preview { position: relative; margin-top: 10px; display: inline-block; }
   .photo-preview img { max-width: 160px; max-height: 200px; border-radius: 8px; border: 1px solid var(--border); display: block; }
   .photo-preview button { position: absolute; top: -10px; right: -10px; width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--minus); color: #fff; font-size: 16px; cursor: pointer; }
+  .lock-view { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .lock-box { width: 100%; max-width: 320px; text-align: center; }
+  .lock-title { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
+  .lock-msg { font-size: 15px; color: var(--ink-muted); margin: 0 0 16px; }
+  .lock-dots { display: flex; justify-content: center; gap: 14px; min-height: 18px; }
+  .lock-dots span { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--accent); }
+  .lock-dots span.on { background: var(--accent); }
+  .lock-error { color: var(--red); font-weight: 700; min-height: 22px; margin: 12px 0 8px; font-size: 14px; }
+  .lock-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+  .lock-pad button { height: 64px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); font-size: 26px; font-weight: 600; cursor: pointer; }
+  .lock-pad button:active { background: var(--accent-soft); }
+  .lock-pad button.lock-sub { font-size: 24px; background: transparent; border-color: transparent; }
+  .lock-pad button.lock-sub.hidden { display: block !important; visibility: hidden; }
   .modal { background: var(--surface); border-radius: 14px; padding: 20px; width: 100%; max-width: 380px; }
   .modal p { margin: 0 0 16px; font-size: 16px; line-height: 1.6; white-space: pre-wrap; }
   .modal-actions { display: flex; gap: 10px; }
@@ -267,6 +280,23 @@
 </nav>
 
 <div id="toast" class="toast hidden"></div>
+
+<div id="lockView" class="lock-view hidden">
+  <div class="lock-box">
+    <div class="lock-title">🔒 家計簿</div>
+    <p id="lockMsg" class="lock-msg"></p>
+    <div id="lockDots" class="lock-dots"></div>
+    <p id="lockError" class="lock-error"></p>
+    <div id="lockPad" class="lock-pad">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button id="lockBio" class="lock-sub" aria-label="指紋で解除">👆</button><button data-k="0">0</button><button data-k="del" class="lock-sub" aria-label="1文字消す">⌫</button>
+    </div>
+    <button class="btn-primary hidden" id="lockOk">OK</button>
+    <button class="btn hidden" id="lockCancel" style="width:100%;margin-top:10px">キャンセル</button>
+  </div>
+</div>
 
 <div id="receiptOverlay" class="overlay hidden">
   <div class="receipt-box">
@@ -716,8 +746,9 @@
         render();
       } catch (err) { toast(err.message); }
     };
-    $('exCamBtn').onclick = () => $('exCam').click();
-    $('exPickBtn').onclick = () => $('exPick').click();
+    // カメラや写真選択で一時的に裏に回っても、ロックがかからないようにする
+    $('exCamBtn').onclick = () => { ignoreNextHide = true; $('exCam').click(); };
+    $('exPickBtn').onclick = () => { ignoreNextHide = true; $('exPick').click(); };
     $('exCam').onchange = onPhoto;
     $('exPick').onchange = onPhoto;
     if ($('exPhotoDel')) $('exPhotoDel').onclick = () => { clearPhoto(); render(); };
@@ -1070,6 +1101,9 @@
     mainEl.innerHTML = `
       <div class="screen-title">設定</div>
 
+      <div class="section-head">アプリのロック</div>
+      <div class="card" id="lockSettings">${lockSettingsHtml(ui.bioOk)}</div>
+
       <div class="section-head">Google ドライブ(スプレッドシート)</div>
       <div class="card">
         <p class="note" id="syncText" style="margin-top:0"></p>
@@ -1123,6 +1157,8 @@
       <p class="note">データはこの端末とGoogleスプレッドシートに保存されます。</p>`;
 
     updateSyncStatusUI();
+    bindLockSettings();
+    if (ui.bioOk === undefined) bioAvailable().then(ok => { ui.bioOk = ok; if (ui.settingsOpen) render(); });
     $('signInBtn').onclick = signIn;
     $('signOutBtn').onclick = signOut;
     $('syncNowBtn').onclick = () => { if (!accessToken) { toast('先にサインインしてください'); return; } flushSheetSync(); };
@@ -1744,7 +1780,173 @@
   //  起動
   // ============================================================
   if (!localStorage.getItem(STORAGE_KEY)) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  // ============================================================
+  //  アプリのロック(PIN・指紋)
+  // ============================================================
+  const PIN_HASH_KEY = 'kakeiboPinHash_v1';
+  const PIN_LEN_KEY = 'kakeiboPinLen_v1';
+  const BIO_CRED_KEY = 'kakeiboBioCred_v1';
+  const LOCK_AFTER_MS = 60 * 1000; // 裏に回ってからこの時間が過ぎたらロック
+
+  const lockState = { mode: '', entry: '', first: '', onDone: null, cancelable: false };
+  let hiddenAt = 0;
+  let ignoreNextHide = false;
+
+  const pinConfigured = () => !!localStorage.getItem(PIN_HASH_KEY);
+  const bioConfigured = () => !!localStorage.getItem(BIO_CRED_KEY);
+  async function pinHash(pin) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('kakeibo-pin:' + pin));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const unb64 = (s) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const randomBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+  async function bioAvailable() {
+    try {
+      return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+    } catch (e) { return false; }
+  }
+
+  // 端末の指紋(画面ロック)で本人確認できる鍵を作る
+  async function bioRegister() {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: randomBytes(32),
+      rp: { name: '家計簿' },
+      user: { id: randomBytes(16), name: '家計簿', displayName: '家計簿' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+      timeout: 60000
+    } });
+    localStorage.setItem(BIO_CRED_KEY, b64(cred.rawId));
+  }
+
+  async function bioVerify() {
+    const res = await navigator.credentials.get({ publicKey: {
+      challenge: randomBytes(32),
+      allowCredentials: [{ type: 'public-key', id: unb64(localStorage.getItem(BIO_CRED_KEY)) }],
+      userVerification: 'required',
+      timeout: 60000
+    } });
+    // authenticatorData の UV フラグ(本人確認済み)を確かめる
+    const flags = new Uint8Array(res.response.authenticatorData)[32];
+    return !!(flags & 0x04);
+  }
+
+  function showLock(mode, opts) {
+    opts = opts || {};
+    Object.assign(lockState, { mode, entry: '', first: '', onDone: opts.onDone || null, cancelable: !!opts.cancelable });
+    $('lockView').classList.remove('hidden');
+    $('lockError').textContent = '';
+    renderLock();
+    if (mode === 'unlock' && bioConfigured()) tryBio();
+  }
+
+  function hideLock() {
+    $('lockView').classList.add('hidden');
+    lockState.mode = '';
+  }
+
+  function renderLock() {
+    const m = lockState.mode;
+    const msg = {
+      unlock: 'PINコードを入力してください',
+      verify: '今のPINコードを入力してください',
+      setup1: '新しいPINコードを入力してください(4〜8桁)',
+      setup2: '確認のため、もう一度入力してください'
+    }[m];
+    $('lockMsg').textContent = msg;
+    const len = m === 'unlock' || m === 'verify' ? Number(localStorage.getItem(PIN_LEN_KEY)) || 4 : Math.max(4, lockState.entry.length);
+    $('lockDots').innerHTML = Array.from({ length: len }, (_, i) => `<span class="${i < lockState.entry.length ? 'on' : ''}"></span>`).join('');
+    $('lockOk').classList.toggle('hidden', !(m === 'setup1' || m === 'setup2'));
+    $('lockBio').classList.toggle('hidden', !(m === 'unlock' && bioConfigured()));
+    $('lockCancel').classList.toggle('hidden', !lockState.cancelable);
+  }
+
+  async function lockSubmit() {
+    const m = lockState.mode, pin = lockState.entry;
+    const err = (t) => { $('lockError').textContent = t; lockState.entry = ''; renderLock(); };
+    if (m === 'unlock' || m === 'verify') {
+      if (await pinHash(pin) !== localStorage.getItem(PIN_HASH_KEY)) { err('PINコードが違います'); return; }
+      const cb = lockState.onDone; hideLock(); if (cb) cb();
+    } else if (m === 'setup1') {
+      if (pin.length < 4) { err('4桁以上で入力してください'); return; }
+      lockState.first = pin; lockState.entry = ''; lockState.mode = 'setup2'; $('lockError').textContent = ''; renderLock();
+    } else if (m === 'setup2') {
+      if (pin !== lockState.first) { lockState.first = ''; lockState.mode = 'setup1'; err('一致しませんでした。最初からやり直してください'); return; }
+      localStorage.setItem(PIN_HASH_KEY, await pinHash(pin));
+      localStorage.setItem(PIN_LEN_KEY, String(pin.length));
+      const cb = lockState.onDone; hideLock(); toast('PINコードを設定しました'); if (cb) cb();
+    }
+  }
+
+  function lockKey(k) {
+    if (k === 'del') { lockState.entry = lockState.entry.slice(0, -1); renderLock(); return; }
+    if (lockState.entry.length >= 8) return;
+    lockState.entry += k;
+    $('lockError').textContent = '';
+    renderLock();
+    // 解除・確認のときは、桁数がそろった時点で自動で照合する
+    const m = lockState.mode;
+    if ((m === 'unlock' || m === 'verify') && lockState.entry.length === (Number(localStorage.getItem(PIN_LEN_KEY)) || 4)) lockSubmit();
+  }
+
+  async function tryBio() {
+    try {
+      if (await bioVerify()) { const cb = lockState.onDone; hideLock(); if (cb) cb(); }
+      else $('lockError').textContent = '指紋を確認できませんでした';
+    } catch (e) {
+      // キャンセルされた場合などは、そのままPIN入力を続けてもらう
+    }
+  }
+
+  $('lockPad').onclick = (e) => { const b = e.target.closest('[data-k]'); if (b) lockKey(b.dataset.k); };
+  $('lockOk').onclick = lockSubmit;
+  $('lockBio').onclick = tryBio;
+  $('lockCancel').onclick = hideLock;
+
+  // 裏に回ってから一定時間たって戻ってきたらロックする(写真撮影中は除く)
+  document.addEventListener('visibilitychange', () => {
+    if (!pinConfigured()) return;
+    if (document.hidden) { hiddenAt = ignoreNextHide ? 0 : Date.now(); ignoreNextHide = false; return; }
+    if (hiddenAt && Date.now() - hiddenAt >= LOCK_AFTER_MS && !lockState.mode) showLock('unlock');
+    hiddenAt = 0;
+  });
+
+  function lockSettingsHtml(bioOk) {
+    if (!pinConfigured()) {
+      return `<p class="note" style="margin-top:0">ロックは今オフです。PINコードを設定すると、アプリを開くときにロックがかかります。</p>
+        <button class="btn" id="pinSet">🔒 PINコードを設定する</button>`;
+    }
+    return `<p class="note" style="margin-top:0">ロックはオンです。アプリを開いたときと、1分以上ほかのアプリを使ってから戻ったときにロックがかかります。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="pinChange">PINコードを変更</button>
+        <button class="btn" id="pinOff">ロックをやめる</button>
+        ${bioOk ? (bioConfigured()
+          ? '<button class="btn" id="bioOff">指紋での解除をやめる</button>'
+          : '<button class="btn" id="bioOn">👆 指紋でも解除できるようにする</button>') : ''}
+      </div>
+      <p class="note">PINコードを忘れたときは、Chromeの設定で このサイトのデータを削除すると ロックが外れます。家計簿のデータは Googleドライブから読み込み直せます(サインインし直してください)。</p>`;
+  }
+
+  function bindLockSettings() {
+    const reRender = () => render();
+    if ($('pinSet')) $('pinSet').onclick = () => showLock('setup1', { cancelable: true, onDone: reRender });
+    if ($('pinChange')) $('pinChange').onclick = () => showLock('verify', { cancelable: true, onDone: () => showLock('setup1', { cancelable: true, onDone: reRender }) });
+    if ($('pinOff')) $('pinOff').onclick = () => showLock('verify', { cancelable: true, onDone: () => {
+      [PIN_HASH_KEY, PIN_LEN_KEY, BIO_CRED_KEY].forEach(k => localStorage.removeItem(k));
+      toast('ロックをやめました'); render();
+    } });
+    if ($('bioOn')) $('bioOn').onclick = async () => {
+      try { await bioRegister(); toast('指紋で解除できるようになりました'); }
+      catch (e) { toast('指紋の登録ができませんでした'); }
+      render();
+    };
+    if ($('bioOff')) $('bioOff').onclick = () => { localStorage.removeItem(BIO_CRED_KEY); toast('指紋での解除をやめました'); render(); };
+  }
+
   render();
+  if (pinConfigured()) showLock('unlock');
   initSync();
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
