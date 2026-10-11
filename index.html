@@ -181,6 +181,16 @@
   .ledger tr.sec td { background: var(--accent-soft); color: var(--accent); font-weight: 700; padding: 6px 12px; border-left: none; }
   .ledger tr.sub td { font-weight: 700; color: var(--ink-muted); }
   .ledger tr.key td { font-weight: 700; }
+  .matrix-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .matrix { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap; }
+  .matrix th { background: var(--accent); color: #fff; font-weight: 700; padding: 8px 10px; text-align: center; }
+  .matrix td { padding: 9px 10px; text-align: right; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--border); border-left: 1px solid var(--border); background: var(--surface); }
+  .matrix .stick { position: sticky; left: 0; z-index: 1; text-align: left; max-width: 110px; overflow: hidden; text-overflow: ellipsis; border-left: none; box-shadow: 1px 0 0 var(--border); }
+  .matrix th.stick { background: var(--accent); }
+  .matrix td.tot { font-weight: 700; }
+  .matrix tbody tr { cursor: pointer; }
+  .matrix tbody tr.on td { background: var(--accent-soft); }
+  .matrix tfoot td { font-weight: 800; border-top: 2px solid var(--ink); border-bottom: none; }
   .ledger tr.total td { font-weight: 800; font-size: 15px; border-top: 2px solid var(--ink); border-bottom: none; }
   .result-box { text-align: center; padding: 18px 10px; }
   .result-box .cap { font-size: 14px; color: var(--ink-muted); }
@@ -237,6 +247,7 @@
   <button data-tab="withdraw"><span class="ic">🏧</span>出金</button>
   <button data-tab="pl"><span class="ic">📊</span>損益</button>
   <button data-tab="bs"><span class="ic">⚖️</span>貸借</button>
+  <button data-tab="payee"><span class="ic">🧾</span>支払先</button>
 </nav>
 
 <div id="toast" class="toast hidden"></div>
@@ -409,6 +420,7 @@
     withdraw: { bank: '', to: '', adding: false },
     pl: { mode: 'month', year: new Date().getFullYear(), month: new Date().getMonth() + 1 },
     bs: { date: today() },
+    payee: { year: new Date().getFullYear(), selected: '' },
     settingsOpen: false
   };
 
@@ -417,7 +429,7 @@
   function render() {
     document.querySelectorAll('#tabbar button').forEach(b => b.classList.toggle('on', !ui.settingsOpen && b.dataset.tab === tab));
     if (ui.settingsOpen) { renderSettings(); return; }
-    ({ expense: renderExpense, deposit: renderDeposit, withdraw: renderWithdraw, pl: renderPL, bs: renderBS })[tab]();
+    ({ expense: renderExpense, deposit: renderDeposit, withdraw: renderWithdraw, pl: renderPL, bs: renderBS, payee: renderPayee })[tab]();
   }
 
   document.querySelectorAll('#tabbar button').forEach(b => {
@@ -880,6 +892,70 @@
       <p class="note">※ アプリを使い始めた時点の現金・預金・カード残高は、設定の「開始残高」で入力すると正しい金額になります。</p>`;
 
     $('bsDate').onchange = (e) => { s.date = e.target.value || today(); render(); };
+  }
+
+  // ---------- 支払先別 月別出費一覧 ----------
+  const NO_PAYEE = '(支払先なし)';
+
+  function renderPayee() {
+    const s = ui.payee;
+    const from = `${s.year}-01-01`, to = `${s.year}-12-31`;
+    // 費用科目への支出(借方が費用)を、支払先 × 月 で集計する
+    const table = {}, txnsOf = {};
+    for (const t of data.txns) {
+      if (t.date < from || t.date > to) continue;
+      const a = acc(t.debit);
+      if (!a || a.type !== 'expense') continue;
+      const p = t.payee || NO_PAYEE;
+      const m = Number(t.date.slice(5, 7));
+      if (!table[p]) { table[p] = new Array(13).fill(0); txnsOf[p] = []; }
+      table[p][m] += t.amount;
+      table[p][0] += t.amount;
+      txnsOf[p].push(t);
+    }
+    const payees = Object.keys(table).sort((a, b) => (a === NO_PAYEE) - (b === NO_PAYEE) || table[b][0] - table[a][0]);
+    const monthTotal = new Array(13).fill(0);
+    payees.forEach(p => table[p].forEach((v, i) => monthTotal[i] += v));
+    if (s.selected && !table[s.selected]) s.selected = '';
+
+    const num = (v) => v ? Math.round(v).toLocaleString('ja-JP') : '';
+    const head = '<tr><th class="stick">支払先</th>' + [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => `<th>${m}月</th>`).join('') + '<th>合計</th></tr>';
+    const body = payees.map(p => `<tr class="${p === s.selected ? 'on' : ''}" data-payee-row="${esc(p)}">
+        <td class="stick">${esc(p)}</td>${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => `<td>${num(table[p][m])}</td>`).join('')}<td class="tot">${num(table[p][0])}</td>
+      </tr>`).join('');
+    const foot = `<tr class="total"><td class="stick">合計</td>${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => `<td>${num(monthTotal[m])}</td>`).join('')}<td class="tot">${num(monthTotal[0])}</td></tr>`;
+
+    let detail = '';
+    if (s.selected) {
+      const list = txnsOf[s.selected].slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+      detail = `<div class="section-head">${esc(s.selected)} の明細(${s.year}年)</div><div class="card">${list.map(t => `
+        <div class="entry">
+          <div class="entry-main"><div class="entry-title">${esc(t.debit)}</div>
+          <div class="entry-sub">${esc([shortDate(t.date), t.credit, t.person ? '👤' + t.person : '', t.memo].filter(Boolean).join('　'))}</div></div>
+          <div class="entry-amount">${yen(t.amount)}</div>
+        </div>`).join('')}</div>`;
+    }
+
+    mainEl.innerHTML = `
+      <div class="screen-title">支払先別 月別出費</div>
+      <div class="period">
+        <button class="icon-btn" id="pyPrev">◀</button>
+        <div class="label-big">${s.year}年</div>
+        <button class="icon-btn" id="pyNext">▶</button>
+      </div>
+      ${payees.length ? `
+      <div class="card ledger-card"><div class="matrix-wrap"><table class="matrix">
+        <thead>${head}</thead><tbody>${body}</tbody><tfoot>${foot}</tfoot>
+      </table></div></div>
+      <p class="note">※ 表は横にスクロールできます。支払先を押すと、下に明細が出ます。</p>
+      ${detail}` : '<div class="card empty">この年の出費はまだありません</div>'}`;
+
+    $('pyPrev').onclick = () => { s.year--; s.selected = ''; render(); };
+    $('pyNext').onclick = () => { s.year++; s.selected = ''; render(); };
+    mainEl.querySelectorAll('[data-payee-row]').forEach(r => r.onclick = () => {
+      s.selected = s.selected === r.dataset.payeeRow ? '' : r.dataset.payeeRow;
+      render();
+    });
   }
 
   // ---------- 設定 ----------
