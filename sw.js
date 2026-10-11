@@ -1,6 +1,6 @@
 // オフラインでも画面を開けるよう、アプリのファイルをキャッシュする
-const CACHE = 'kakeibo-v1';
-const FILES = ['./', 'index.html', 'manifest.json', 'icon.svg'];
+const CACHE = 'kakeibo-v2';
+const FILES = ['./', 'index.html', 'manifest.json', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
