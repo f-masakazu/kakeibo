@@ -207,13 +207,13 @@
     padding-bottom: env(safe-area-inset-bottom);
   }
   .tabbar button {
-    flex: 1; background: none; border: none; padding: 8px 0 9px; cursor: pointer;
-    color: var(--ink-muted); font-size: 11px; font-weight: 600;
+    flex: 1; background: none; border: none; padding: 6px 0 7px; margin: 5px 2px; cursor: pointer;
+    color: var(--ink-muted); font-size: 11px; font-weight: 600; border-radius: 12px;
     display: flex; flex-direction: column; align-items: center; gap: 2px;
   }
   .tabbar button .ic { font-size: 22px; line-height: 1.1; }
-  .tabbar button.on { color: var(--accent); }
-  .tabbar button.on .ic { transform: scale(1.1); }
+  /* 選択中のタブは色を反転して目立たせる */
+  .tabbar button.on { background: var(--accent); color: var(--surface); font-weight: 800; }
 
   /* --- toast / modal --- */
   .toast {
