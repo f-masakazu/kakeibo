@@ -166,6 +166,9 @@
   .sub-box { margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--accent-soft); }
   .sub-box .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .optional { font-weight: 400; }
+  .plan-head { display: flex; align-items: center; justify-content: space-between; }
+  .plan-head .btn { font-size: 13px; padding: 6px 12px; }
+  .plan-past .entry-amount, .plan-past .payee-em { color: var(--ink-muted); }
 
   /* --- 帳票 --- */
   .period { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
@@ -350,7 +353,8 @@
       ],
       payees: [],
       people: ['自分'],
-      txns: []
+      txns: [],
+      plans: []
     };
   }
 
@@ -362,6 +366,7 @@
         if (d && Array.isArray(d.accounts) && Array.isArray(d.txns)) {
           if (!Array.isArray(d.payees)) d.payees = [];
           if (!Array.isArray(d.people)) d.people = ['自分'];
+          if (!Array.isArray(d.plans)) d.plans = [];
           return d;
         }
       }
@@ -476,7 +481,7 @@
   let tab = 'expense';
   // 入力画面の選択状態は、他の画面に移って戻ってきても保つ
   const ui = {
-    expense: { method: 'cash', card: '', emoney: '', account: '', payee: '', person: '', adding: false, charging: false, chargeFrom: '' },
+    expense: { method: 'cash', card: '', emoney: '', account: '', payee: '', person: '', adding: false, charging: false, chargeFrom: '', planOpen: false },
     deposit: { bank: '', from: '', adding: false },
     withdraw: { bank: '', to: '', adding: false },
     pl: { mode: 'month', year: new Date().getFullYear(), month: new Date().getMonth() + 1 },
@@ -695,6 +700,7 @@
         </div>
         <button class="btn-primary" id="exSave">登録する</button>
       </div>
+      ${plansHtml(s)}
       ${recentHtml(['exp_cash', 'exp_card', 'exp_emoney', 'charge'], '最近の出費')}`;
 
     mainEl.querySelectorAll('[data-method]').forEach(b => b.onclick = () => {
@@ -777,7 +783,77 @@
       s.payee = '';
       render();
     };
+    bindPlans(s);
     bindDelete();
+  }
+
+  // ---------- 支払い予定メモ ----------
+  function plansHtml(s) {
+    const list = data.plans.slice().sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+    const total = list.reduce((n, p) => n + p.amount, 0);
+    const rows = list.map(p => {
+      const sub = [esc(shortDate(p.date)), esc(p.memo)].filter(Boolean).join('　');
+      return `<div class="entry${p.date < today() ? ' plan-past' : ''}">
+        <div class="entry-main"><div class="entry-title"><span class="payee-em">${esc(p.payee)}</span></div><div class="entry-sub">${sub}</div></div>
+        <div class="entry-amount">${yen(p.amount)}</div>
+        <button class="entry-del" data-plandel="${esc(p.id)}" aria-label="削除">🗑</button>
+      </div>`;
+    }).join('');
+    const d = (k, def) => esc(drafts[k] != null ? drafts[k] : def);
+    const form = s.planOpen ? `
+      <div class="sub-box" style="margin-bottom:10px">
+        <div class="field">
+          <label class="label">日付</label>
+          <input class="input" type="date" id="pmDate" data-keep value="${d('pmDate', today())}">
+        </div>
+        <div class="field">
+          <label class="label">支払い先</label>
+          <input class="input" id="pmPayee" data-keep list="pmPayeeList" placeholder="例: 電力会社" maxlength="30" autocomplete="off" value="${d('pmPayee', '')}">
+          <datalist id="pmPayeeList">${data.payees.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+        </div>
+        <div class="field">
+          <label class="label">金額</label>
+          <div class="amount-wrap"><input class="input amount-input" style="font-size:20px" id="pmAmount" data-keep inputmode="numeric" placeholder="0" autocomplete="off" value="${d('pmAmount', '')}"></div>
+        </div>
+        <div class="field">
+          <label class="label">摘要 <span class="optional">(任意)</span></label>
+          <input class="input" id="pmMemo" data-keep placeholder="例: 10月分 電気代" maxlength="100" value="${d('pmMemo', '')}">
+        </div>
+        <button class="btn-primary" id="pmSave" style="font-size:16px;padding:12px 0">メモに追加</button>
+      </div>` : '';
+    return `<div class="section-head plan-head"><span>支払い予定メモ</span><button class="btn" id="pmToggle">${s.planOpen ? '閉じる' : '＋ 追加'}</button></div>
+      <div class="card">
+        ${form}
+        ${rows || '<div class="empty">支払い予定はありません</div>'}
+        ${list.length ? `<div class="report-total"><span>合計</span><span>${yen(total)}</span></div>` : ''}
+      </div>`;
+  }
+
+  function bindPlans(s) {
+    $('pmToggle').onclick = () => { s.planOpen = !s.planOpen; render(); if (s.planOpen) $('pmPayee').focus(); };
+    if ($('pmSave')) $('pmSave').onclick = () => {
+      const date = $('pmDate').value;
+      const payee = $('pmPayee').value.trim();
+      const amount = parseAmount($('pmAmount').value);
+      const memo = $('pmMemo').value.trim();
+      if (!date) { toast('日付を入力してください'); return; }
+      if (!payee) { toast('支払い先を入力してください'); $('pmPayee').focus(); return; }
+      if (!amount || amount <= 0) { toast('金額を入力してください'); $('pmAmount').focus(); return; }
+      data.plans.push({ id: newId(), date, payee, amount, memo, createdAt: Date.now() });
+      saveData();
+      // 続けて入力しやすいよう、日付以外を空に戻す
+      $('pmPayee').value = ''; $('pmAmount').value = ''; $('pmMemo').value = '';
+      toast(`支払い予定メモに ${payee} ${yen(amount)} を追加しました`);
+      render();
+    };
+    mainEl.querySelectorAll('[data-plandel]').forEach(b => b.onclick = () => {
+      const p = data.plans.find(x => x.id === b.dataset.plandel);
+      if (!p) return;
+      confirmBox(`${shortDate(p.date)} ${p.payee} ${yen(p.amount)} のメモを削除しますか？`, () => {
+        data.plans = data.plans.filter(x => x.id !== p.id);
+        saveData(); render(); toast('削除しました');
+      });
+    });
   }
 
   function bankChipsHtml(state) {
@@ -1235,8 +1311,9 @@
   const SHEET_FILE_NAME = '家計簿データ';
   const SHEET_ID_KEY = 'kakeiboSheetId_v1';
   const FOLDER_KEY = 'kakeiboFolder_v1';
-  const SH_TX = '取引', SH_ACC = '勘定科目', SH_META = '設定', SH_LIST = 'リスト';
-  const SHEET_TABS = [SH_TX, SH_ACC, SH_META, SH_LIST];
+  const SH_TX = '取引', SH_ACC = '勘定科目', SH_META = '設定', SH_LIST = 'リスト', SH_PLAN = '支払い予定メモ';
+  const SHEET_TABS = [SH_TX, SH_ACC, SH_META, SH_LIST, SH_PLAN];
+  const PLAN_HEADER = ['日付', '支払い先', '金額', '摘要'];
   const TX_HEADER = ['ID', '日付', '区分', '借方科目', '貸方科目', '金額', '摘要', '登録日時', '支払先', '使った人', 'レシート'];
   const ACC_HEADER = ['科目名', '分類', '種別', '借方合計', '貸方合計', '残高'];
 
@@ -1607,9 +1684,9 @@
   }
 
   async function readSheet() {
-    const ranges = [`'${SH_TX}'!A2:K`, `'${SH_ACC}'!A2:C`, `'${SH_META}'!B1`, `'${SH_LIST}'!A2:B`].map(encodeURIComponent).join('&ranges=');
+    const ranges = [`'${SH_TX}'!A2:K`, `'${SH_ACC}'!A2:C`, `'${SH_META}'!B1`, `'${SH_LIST}'!A2:B`, `'${SH_PLAN}'!A2:D`].map(encodeURIComponent).join('&ranges=');
     const r = await apiJson(`${SHEETS}/${sheetId}/values:batchGet?ranges=${ranges}&valueRenderOption=UNFORMATTED_VALUE`);
-    const [tx, ac, meta, list] = r.valueRanges.map(v => v.values || []);
+    const [tx, ac, meta, list, pl] = r.valueRanges.map(v => v.values || []);
     const updatedAt = Number(meta[0] && meta[0][0]) || 0;
     const accounts = ac.filter(row => row[0]).map(row => ({ name: String(row[0]).trim(), type: typeKey(row[1]), role: roleKey(row[2]) }));
     const txns = tx.filter(row => row[3] && row[4] && row[5]).map((row, i) => ({
@@ -1633,7 +1710,15 @@
     txns.forEach(t => [t.debit, t.credit].forEach(n => {
       if (!accounts.find(a => a.name === n)) accounts.push({ name: n, type: 'expense', role: '' });
     }));
-    return { updatedAt, accounts, txns, payees, people, empty: !accounts.length && !txns.length };
+    const plans = pl.filter(row => row[0] && row[2]).map((row, i) => ({
+      id: 'p' + i + Date.now().toString(36),
+      date: cellDate(row[0]),
+      payee: String(row[1] || '').trim(),
+      amount: parseAmount(row[2]),
+      memo: String(row[3] || ''),
+      createdAt: i
+    })).filter(p => p.amount > 0);
+    return { updatedAt, accounts, txns, payees, people, plans, empty: !accounts.length && !txns.length };
   }
 
   async function writeSheet() {
@@ -1650,10 +1735,14 @@
         `=SUMIFS(${q(SH_TX)}!$F:$F,${q(SH_TX)}!$E:$E,$A${r})`,
         `=IF(OR($B${r}="資産",$B${r}="費用"),D${r}-E${r},E${r}-D${r})`];
     }));
+    const planRows = [PLAN_HEADER].concat(
+      data.plans.slice().sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt)
+        .map(p => [p.date, p.payee, p.amount, p.memo || ''])
+    );
     const listRows = [['支払先', '使った人']];
     for (let i = 0; i < Math.max(data.payees.length, data.people.length); i++) listRows.push([data.payees[i] || '', data.people[i] || '']);
     await apiJson(`${SHEETS}/${sheetId}/values:batchClear`, {
-      method: 'POST', json: { ranges: [`'${SH_TX}'!A:K`, `'${SH_ACC}'!A:F`, `'${SH_META}'!A:B`, `'${SH_LIST}'!A:B`] }
+      method: 'POST', json: { ranges: [`'${SH_TX}'!A:K`, `'${SH_ACC}'!A:F`, `'${SH_META}'!A:B`, `'${SH_LIST}'!A:B`, `'${SH_PLAN}'!A:D`] }
     });
     await apiJson(`${SHEETS}/${sheetId}/values:batchUpdate`, {
       method: 'POST', json: {
@@ -1662,6 +1751,7 @@
           { range: `'${SH_TX}'!A1`, values: txRows },
           { range: `'${SH_ACC}'!A1`, values: accRows.map(r => r.slice(0, 3)) },
           { range: `'${SH_LIST}'!A1`, values: listRows },
+          { range: `'${SH_PLAN}'!A1`, values: planRows },
           { range: `'${SH_META}'!A1`, values: [['最終更新', data.updatedAt], ['最終更新(表示用)', new Date(data.updatedAt || Date.now()).toLocaleString('ja-JP')], ['アプリ', '家計簿 v1']] }
         ]
       }
@@ -1697,7 +1787,7 @@
         } else throw e;
       }
       if (!remote.empty && (force || remote.updatedAt > (data.updatedAt || 0))) {
-        data = { updatedAt: force ? Date.now() : remote.updatedAt, accounts: remote.accounts, txns: remote.txns, payees: remote.payees, people: remote.people.length ? remote.people : ['自分'] };
+        data = { updatedAt: force ? Date.now() : remote.updatedAt, accounts: remote.accounts, txns: remote.txns, payees: remote.payees, people: remote.people.length ? remote.people : ['自分'], plans: remote.plans };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         if (force) await writeSheet(); // 最終更新を揃えておく
         render();
